@@ -3,32 +3,35 @@
 ## Running
 
 ```sh
-go test -cover .          # tests with coverage summary
-go run ./scripts/check    # every gate, as CI and the factory run it
+go test ./...
+go test -race ./...
+go test -cover ./...
 ```
+
+The suite uses standard Go `*_test.go` files in the root package. It does not require a separate test module or external services.
 
 ## Policy
 
-- Statement coverage of the library (every package except `scripts/`) must stay at or above 80 %;
-  the gate fails below it.
-- Tests live in package `syntheticprobe_test` and exercise the public API only. They assert every
-  observable effect: return values, returned errors (`errors.Is`) and their messages.
-- Prefer table-driven tests with `t.Run` subtests; document usage with runnable `Example`
-  functions, which `go test` verifies through their `// Output:` comments.
-- The race detector runs whenever cgo and a C compiler are available (always in Linux CI); the
-  gate prints why when it has to run without it.
+- Tests exercise the public API and assert returned values, returned `*Error` codes and messages, and `Report` values.
+- Probe tests use a fake `Doer` and a fake clock where latency or timestamps matter. There is no network access in those tests.
+- The timeout test uses a real timer with a 20 ms timeout and a 1 s bound.
 - Each bug fix starts with a failing test that reproduces it.
-- Tests are deterministic: no network, no wall clock, no dependence on test order.
+- Tests are deterministic and do not depend on test order.
+
+## What the tests cover
+
+- `Probe.Validate`: `invalid_probe` for a blank name, a disallowed method, `ftp://`, a URL with userinfo, an `ExpectStatus` value outside 100..599, and a negative `Timeout`; `Run` does not call the `Doer` for an invalid probe.
+- `Runner.Run`: ordered failures `transport`, `status`, `body_too_large`, `body`, `latency`, with the first failure winning; default `ExpectStatus` of 200 and explicit multiple status codes; `MaxLatency` of 0 disables the latency check.
+- Body handling: a body of 1,048,577 bytes with `MaxBodyBytes` 1,048,576 returns `body_too_large`; a body of exactly 1,048,576 bytes is accepted; the response body is closed on every path.
+- Timeout handling: a blocking `Doer` with a 20 ms `Timeout` returns `timeout` in less than 1 s; a canceled parent context reports `timeout` only when the deadline passed, otherwise `transport`.
+- Edge cases: HEAD with an empty body and a nil `Header`.
+- `Result`: fields are populated; the value never contains headers, URL, query strings or body bytes.
+- `Tracker`: `NewTracker` rejects target 1.0 or 0 and window 0 with `invalid_target`; after 19 OK results and 1 failure the report has `SuccessRatio` 0.95, `BudgetRemaining` 0.5 and `Breached` false; two more failures give `SuccessRatio` 0.85, `BudgetRemaining` -0.5 and `Breached` true; after 25 results only the last 20 count; `OnResult` receives each `Result`; concurrent `Add` and `Report` run under `-race`.
 
 ## Tiers
 
-- Local tier (every gate run, coverage measured here): unit and property tests, plus conformance on small
-  fixtures kept in the repository.
-- CI tier: conformance that needs an external tool or a download. Start the file with `//go:build conformance`; `scripts/check` adds `-tags=conformance` only in CI
-  (unless `FABRICA_CI=1`). The CI `conformance` job sets `FABRICA_CI=1` and runs the full suite. Tools are installed
-  by the optional `ci/conformance-setup.sh` (bash, CI only; verify every download against a pinned SHA-256), and
-  tagged tests skip cleanly when their tool is missing.
+All current tests are standard `go test` tests and run in the local tier. There is no tagged conformance tier for this library.
 
 ## Layout
 
-`<file>_test.go` sits next to the file it tests. Fixtures and golden files go in `testdata/`.
+`*_test.go` files sit in the root package next to the code they test. The tests use small in-code values and do not require `testdata/` fixtures.
